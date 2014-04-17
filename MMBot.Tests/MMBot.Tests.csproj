@@ -148,6 +148,7 @@
   <ItemGroup>
     <Compile Include="AdapterTests.cs" />
     <Compile Include="BrainTests.cs" />
+    <Compile Include="HipchatMessageParserTests.cs" />
     <Compile Include="CompiledScripts\Ascii.cs" />
     <Compile Include="CompiledScripts\CatchAllTest.cs" />
     <Compile Include="CompiledScripts\Cats.cs" />
@@ -184,6 +185,7 @@
     <Compile Include="StubBrain.cs" />
     <Compile Include="StubEchoScript.cs" />
     <Compile Include="TestLogger.cs" />
+    <Compile Include="WordParserTest.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="app.config" />

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using agsXMPP;
@@ -9,6 +10,7 @@ using agsXMPP.protocol.iq.roster;
 using agsXMPP.protocol.x.muc;
 using agsXMPP.Xml.Dom;
 using Common.Logging;
+using Uri = System.Uri;
 
 namespace MMBot.HipChat
 {
@@ -19,7 +21,7 @@ namespace MMBot.HipChat
         private static string[] _logRooms;
         private static string _nick;
         private static string _password;
-
+        private static string _authToken;
         private static bool _isConfigured = false;
         
         private XmppClientConnection _client = null;
@@ -27,7 +29,7 @@ namespace MMBot.HipChat
         private string _confhost;
         private string _roomNick;
         private readonly Dictionary<string, string> _roster = new Dictionary<string, string>();
-
+        HipchatMessageParser parser = new HipchatMessageParser();
 
         public HipChatAdapter(ILog logger, string adapterId)
             : base(logger, adapterId)
@@ -40,7 +42,9 @@ namespace MMBot.HipChat
             Configure();
         }
 
-        private void Configure() {
+        private void Configure()
+        {
+            _authToken = Robot.GetConfigVariable("MMBOT_HIPCHAT_AUTHTOKEN");
             _host = Robot.GetConfigVariable("MMBOT_HIPCHAT_HOST") ?? "chat.hipchat.com";
             _confhost = Robot.GetConfigVariable("MMBOT_HIPCHAT_CONFHOST") ?? "conf.hipchat.com";
             _nick = Robot.GetConfigVariable("MMBOT_HIPCHAT_NICK");
@@ -168,8 +172,21 @@ namespace MMBot.HipChat
             foreach (var message in messages)
             {
                 var to = new Jid(envelope.User.Room);
-                _client.Send(new agsXMPP.protocol.client.Message(to, string.Equals(to.Server, _confhost) ? MessageType.groupchat : MessageType.chat, message));
+                if (MustUseXMPP(to))
+                {
+                    _client.Send(new agsXMPP.protocol.client.Message(to, string.Equals(to.Server, _confhost) ? MessageType.groupchat : MessageType.chat, message));
+                }
+                else if (!string.IsNullOrWhiteSpace(message))
+                {
+                    var hipchatMessage = parser.Parse(message);
+                    await PostMessageToRoomUsingAPI(hipchatMessage, envelope.User.Room);
+                }
             }
+        }
+
+        bool MustUseXMPP(Jid to)
+        {
+            return _authToken == null || !string.Equals(to.Server, _confhost);
         }
 
         public override async Task Reply(Envelope envelope, params string[] messages)
@@ -251,6 +268,42 @@ namespace MMBot.HipChat
             _client = null;
         }
 
+        private Uri BuildMessageUri(HipchatMessage message, string roomId)
+        {
+            return new Uri(string.Format(@"https://api.hipchat.com/v1/rooms/message?format=json&auth_token={0}", Uri.EscapeDataString(_authToken)));
+        }
+        
+        private async Task PostMessageToRoomUsingAPI(HipchatMessage message, string roomId)
+        {
+            var client = new HttpClient();
 
+            roomId = ExtractHipchatRoomIdOnly(roomId);
+
+            var parameters = new Dictionary<string, string>
+            {
+                {"room_id", roomId},
+                {"notify", message.Notify ? "1" : "0"},
+                {"message_format", message.Format ?? "text"},
+                {"message", message.Contents},
+                {"from", message.From ?? _nick}
+            };
+
+            if (message.BackgroundColor != null)
+            {
+                parameters["color"] = message.BackgroundColor;
+            }
+
+            var uri = BuildMessageUri(message, roomId);
+
+            var content = new FormUrlEncodedContent(parameters);
+
+            await client.PostAsync(uri, content);
+        }
+
+        static string ExtractHipchatRoomIdOnly(string roomId)
+        {
+            if (roomId.Contains("_")) roomId = roomId.Split('@')[0].Split('_')[1];
+            return roomId;
+        }
     }
 }
