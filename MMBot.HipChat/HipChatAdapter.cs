@@ -10,6 +10,7 @@ using agsXMPP.protocol.iq.roster;
 using agsXMPP.protocol.x.muc;
 using agsXMPP.Xml.Dom;
 using Common.Logging;
+using Newtonsoft.Json;
 using Uri = System.Uri;
 
 namespace MMBot.HipChat
@@ -23,7 +24,7 @@ namespace MMBot.HipChat
         private static string _password;
         private static string _authToken;
         private static bool _isConfigured = false;
-        
+        private static Uri _apiMessageRoomUrl;
         private XmppClientConnection _client = null;
         private string _username;
         private string _confhost;
@@ -45,6 +46,7 @@ namespace MMBot.HipChat
         private void Configure()
         {
             _authToken = Robot.GetConfigVariable("MMBOT_HIPCHAT_AUTHTOKEN");
+            _apiMessageRoomUrl  =new Uri(string.Format(@"https://api.hipchat.com/v1/rooms/message?format=json&auth_token={0}", Uri.EscapeDataString(_authToken)));
             _host = Robot.GetConfigVariable("MMBOT_HIPCHAT_HOST") ?? "chat.hipchat.com";
             _confhost = Robot.GetConfigVariable("MMBOT_HIPCHAT_CONFHOST") ?? "conf.hipchat.com";
             _nick = Robot.GetConfigVariable("MMBOT_HIPCHAT_NICK");
@@ -74,6 +76,7 @@ namespace MMBot.HipChat
                 helpSb.AppendLine("  MMBOT_HIPCHAT_USERNAME: The username of the bot account on HipChat, e.g. 70126_494074");
                 helpSb.AppendLine("  MMBOT_HIPCHAT_PASSWORD: The password of the bot account on HipChat");
                 helpSb.AppendLine("  MMBOT_HIPCHAT_ROOMS: A comma separated list of room names that mmbot should join");
+                helpSb.AppendLine("  MMBOT_HIPCHAT_AUTHTOKEN: An optional authorization token (for v1 API) that if set will allow room messages to use hip-chat specific formatting features.");
                 helpSb.AppendLine("More info on these values and how to create the mmbot.ini file can be found at https://github.com/mmbot/mmbot/wiki/Configuring-mmbot");
                 Logger.Warn(helpSb.ToString());
                 _isConfigured = false;
@@ -174,7 +177,7 @@ namespace MMBot.HipChat
                 var to = new Jid(envelope.User.Room);
                 if (MustUseXMPP(to))
                 {
-                    _client.Send(new agsXMPP.protocol.client.Message(to, string.Equals(to.Server, _confhost) ? MessageType.groupchat : MessageType.chat, message));
+                    _client.Send(new agsXMPP.protocol.client.Message(to, string.Equals(to.Server, _confhost) ? MessageType.groupchat : MessageType.chat, RemoveFormatSpecifiers(message)));
                 }
                 else if (!string.IsNullOrWhiteSpace(message))
                 {
@@ -182,11 +185,6 @@ namespace MMBot.HipChat
                     await PostMessageToRoomUsingAPI(hipchatMessage, envelope.User.Room);
                 }
             }
-        }
-
-        bool MustUseXMPP(Jid to)
-        {
-            return _authToken == null || !string.Equals(to.Server, _confhost);
         }
 
         public override async Task Reply(Envelope envelope, params string[] messages)
@@ -199,7 +197,7 @@ namespace MMBot.HipChat
             foreach (var message in messages)
             {
                 var to = new Jid(userAddress);
-                _client.Send(new agsXMPP.protocol.client.Message(to, string.Equals(to.Server, _confhost) ? MessageType.groupchat : MessageType.chat, message));
+                _client.Send(new agsXMPP.protocol.client.Message(to, string.Equals(to.Server, _confhost) ? MessageType.groupchat : MessageType.chat, RemoveFormatSpecifiers(message)));
             }
         }
 
@@ -212,7 +210,7 @@ namespace MMBot.HipChat
             foreach (var message in messages.Select(m => "/me " + m))
             {
                 var to = new Jid(envelope.User.Room);
-                _client.Send(new agsXMPP.protocol.client.Message(to, string.Equals(to.Server, _confhost) ? MessageType.groupchat : MessageType.chat, message));
+                _client.Send(new agsXMPP.protocol.client.Message(to, string.Equals(to.Server, _confhost) ? MessageType.groupchat : MessageType.chat, RemoveFormatSpecifiers(message)));
             }
         }
 
@@ -267,11 +265,6 @@ namespace MMBot.HipChat
             _client.Close();
             _client = null;
         }
-
-        private Uri BuildMessageUri(HipchatMessage message, string roomId)
-        {
-            return new Uri(string.Format(@"https://api.hipchat.com/v1/rooms/message?format=json&auth_token={0}", Uri.EscapeDataString(_authToken)));
-        }
         
         private async Task PostMessageToRoomUsingAPI(HipchatMessage message, string roomId)
         {
@@ -292,18 +285,33 @@ namespace MMBot.HipChat
             {
                 parameters["color"] = message.BackgroundColor;
             }
-
-            var uri = BuildMessageUri(message, roomId);
-
+            
             var content = new FormUrlEncodedContent(parameters);
 
-            await client.PostAsync(uri, content);
+            var response = await client.PostAsync(_apiMessageRoomUrl, content);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                throw new Exception(string.Format("Failed to post message to room - message was:\r\n\r\n{0}\r\n\r\nresponse was:\r\n\r\n{1}", JsonConvert.SerializeObject(parameters), body));
+            }
         }
 
-        static string ExtractHipchatRoomIdOnly(string roomId)
+        string ExtractHipchatRoomIdOnly(string roomId)
         {
-            if (roomId.Contains("_")) roomId = roomId.Split('@')[0].Split('_')[1];
-            return roomId;
+            if (roomId == null) throw new ArgumentException("roomId");
+            return roomId.Contains("_") ? roomId.Split('@')[0].Split('_')[1] : roomId;
         }
+
+        string RemoveFormatSpecifiers(string message)
+        {
+            return new HipchatMessageParser().Parse(message).Contents;
+        }
+
+        bool MustUseXMPP(Jid to)
+        {
+            return _authToken == null || !string.Equals(to.Server, _confhost);
+        }
+
     }
 }
